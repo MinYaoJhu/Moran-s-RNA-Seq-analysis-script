@@ -1,0 +1,295 @@
+---
+title: "Deferential expression of response to *Cuscuta* in different Heinz cultivars, 1st lane of sequerncing"
+author: "Moran Farhi"
+date: "September 17, 2015"
+output: html_document
+---
+
+-I had 4 lines/cultivars of Heinz: the genome sequenced and dodder susceptible H1706, the resistant hybrids H9553 and H9492 and a related susceptible hybrid H9775. Each line had an infected and un-infested stem tissue (at 4 DPA) with the cuscuta tissue removed.
+- DGE libraries. Sequenced at 100bp and mapped with Bowtie2 to CDS+500 of ITAG 2.4 sequences
+  - ILL primers 25:38 = H1706, [25:31 un-infested, 32:38 infested]
+  - ILL primers 39:50 = H9775, [39:43 un-infested, 44:50 infested]
+  - ILL primers 51:60 = H9553, [51:55 un-infested, 56:60 infested] 
+  - ILL primers 61:69 = H9492, [61:65 un-infested, 66:69 infested]
+- **"Nots" about the statistical desgine**. The aim is to find genes that are involved in regulating the resistance phenotype of H9492 & H9553. I believe that the resistance is of the same genetic source in both cultivars. Therefore, I would expect the same genes involved in the transcriptional response in both lines. H9775 and H1706 should have some common genetics background with the resistance lines so the differently expressed genes in them should be specific. My understanding, after consulting with Jie Peng, is that these genes are the ones specific to the interaction of phenotype and treatment (i.e. the combined effect). "The fold change for a genotype at infection which is not explained by the genotype's main fold change and the infection main fold change multiplied together". Doing an analysis by grouping factors is kind of a pairwise comparisons, just with the added statistical strength (get better variance estimates) of using all the samples. So the analyses should be done with an interaction design and using the interaction terms with "contrasts" to pick the genes that are different between H9492/(H9775+H1706) and H9553/(H9775+H1706) and then checking the intersect for genes specific to both resistant lines.
+
+**Libreries**
+```{r}
+library("DESeq2")
+library("BiocParallel")
+register(MulticoreParam(4))
+parallel=TRUE
+#vignette('DESeq2')
+setwd("/Users/mfarhi/Dropbox/Parasitic_plants/Resistance/heinz.cultivars/RNA_seq/de_1lane/")
+```
+**Prepare the table**
+```{r}
+matrix <- read.table("cultivars_counts_de.txt", header = T, row.names = 1, com= '')
+Condition <- factor(c(rep("Uninfested", 7), rep("Infested", 7),   rep("Uninfested", 5), rep("Infested", 7), rep("Uninfested", 5), rep("Infested", 5), rep("Uninfested", 5), rep("Infested", 4)))
+Genotype <- as.factor(c(rep("H1706", 14), rep("H9775", 12), rep("H9553", 10), rep("H9492", 9)))
+coldata <- data.frame(row.names = colnames(sample), Genotype, Condition)
+```
+**Desigin with interaction**
+```{r}
+ddsTable <- DESeqDataSetFromMatrix(countData = matrix,
+                                   colData = coldata,
+                                   design = ~ Condition + Genotype + Condition:Genotype)
+```
+Alternatively to these designs we can try grouping factors and using contrasts to get specific comparisons (done below). However, in this case I am interested in the effect of the genotype:treatment so no need to use here.
+
+**Set base levels**
+```{r}
+ddsTable$Condition <- relevel(ddsTable$Condition, "Uninfested")
+ddsTable$Genotype <- relevel(ddsTable$Genotype, "H1706")
+```
+### Visually inspecting the data
+```{r, echo=FALSE}
+#rlog transformation 
+rld <- rlog(ddsTable)
+head(assay(rld))
+#PCA
+plotPCA(rld, intgroup = c("Condition", "Genotype"))
+#MDS
+library("PoiClaClu")
+library("ggplot2")
+sampleDists <- dist(t(assay(rld)))
+sampleDistMatrix <- as.matrix(sampleDists)
+mds <- data.frame(cmdscale(sampleDistMatrix))
+mds <- cbind(mds, as.data.frame(colData(rld)))
+qplot(X1, X2, color=Genotype, shape=Condition, data=mds, size=I(6))
+```
+###Run tests for DESeq2 modes
+**With Wald test (default) and LRT**
+- Check if analysing only with Wald statistics is same/doffernt as testing with LRT and then getting LFC ratios and contransts with Wald test
+- Likelihood ratio test to check the relevance of the treatment:genotype interaction
+- betaPrior=FALSE -> not have moderation of log fold changes
+- First testing Wald vs LRT and whether to use of betaPrior
+
+```{r, echo=FALSE}
+############### Wald
+dds = DESeq(ddsTable) # ?betaPrior=FALSE
+resultsNames(dds)
+#[1] "Intercept"                         "ConditionUninfested"               "ConditionInfested"                
+#[4] "GenotypeH1706"                     "GenotypeH9492"                     "GenotypeH9553"                    
+#[7] "GenotypeH9775"                     "ConditionUninfested.GenotypeH1706" "ConditionInfested.GenotypeH1706"  
+#[10] "ConditionUninfested.GenotypeH9492" "ConditionInfested.GenotypeH9492"   "ConditionUninfested.GenotypeH9553"
+#[13] "ConditionInfested.GenotypeH9553"   "ConditionUninfested.GenotypeH9775" "ConditionInfested.GenotypeH9775"
+attr(dds,"modelMatrixType") # = "expanded" !!!!!!!!
+h9492_Wald <- results(dds, contrast = list("ConditionInfested.GenotypeH9492", "ConditionInfested.GenotypeH9775"))
+h9492_Wald_Sig <- as.data.frame(subset(h9492_Wald, padj < 0.1))
+h9553_Wald <- results(dds, contrast = list("ConditionInfested.GenotypeH9553", "ConditionInfested.GenotypeH9775"))
+h9553_Wald_Sig <- subset(h9553_Wald, padj < 0.1)
+############### LRT
+new.ddsLRT <- DESeq(ddsTable, test = "LRT", full = design(ddsTable), reduced = ~ Condition + Genotype, betaPrior=TRUE)
+resultsNames(new.ddsLRT) #1 intercept, 4 main, 3 interactions
+attr(new.ddsLRT,"modelMatrixType") #"standard"
+h9492_lrt <- results(new.ddsLRT, contrast = list("ConditionInfested.GenotypeH9492", "ConditionInfested.GenotypeH9775"))
+h9492_lrt_Sig <- as.data.frame(subset(h9492_lrt, padj < 0.1))
+############### LRT + Wald
+ddsLRT <- estimateSizeFactors(ddsTable)
+ddsLRT <- estimateDispersions(ddsLRT)
+design(ddsLRT) #= ~Condition + Genotype + Condition:Genotype
+lrt <- nbinomLRT(ddsLRT, full=design(ddsLRT), reduced = ~ Condition + Genotype) # betaPrior = TRUE ?
+resultsNames(lrt)
+#[1] "Intercept"                        "Condition_Infested_vs_Uninfested"
+#[3] "Genotype_H9492_vs_H1706"          "Genotype_H9553_vs_H1706"         
+#[5] "Genotype_H9775_vs_H1706"          "ConditionInfested.GenotypeH9492" 
+#[7] "ConditionInfested.GenotypeH9553"  "ConditionInfested.GenotypeH9775" 
+attr(lrt,"modelMatrixType") # = "standard"
+ddsWald <- nbinomWaldTest(ddsLRT) # betaPrior=FALSE ?
+resultsNames(ddsWald) #same as dds
+attr(ddsWald,"modelMatrixType") # = "standard" when betaPrior=FALSE, "expanded" when TRUE
+h9492_Lrt.Wald <- results(ddsWald, contrast = list("ConditionInfested.GenotypeH9492", "ConditionInfested.GenotypeH9775"))
+h9492_Lrt.Wald_Sig <- as.data.frame(subset(h9492_Lrt.Wald, padj < 0.1))
+h9553_Lrt.Wald <- results(ddsWald, contrast = list("ConditionInfested.GenotypeH9553", "ConditionInfested.GenotypeH9775"))
+h9553_Lrt.Wald_Sig <- subset(h9553_Lrt.Wald, padj < 0.1)
+
+#####--Compare results of running Wald to runnig LRT and then Wald--##############
+LrtWald.vs.Wald <- intersect(rownames(h9492_Wald_Sig), rownames(h9492_Lrt.Wald_Sig))
+summary(LrtWald.vs.Wald)
+#Length     Class      Mode 
+#  1384 character character 
+#Genes are the same so Doing an LRT and then a Wald test overrights and we get the same set. So I removed this from the analysis
+
+LrtWald.vs.Wald.vs.LRT <- Reduce(intersect, list(rownames(h9492_Wald_Sig), rownames(h9492_Lrt.Wald_Sig), rownames(h9492_lrt_Sig)))
+summary(LrtWald.vs.Wald.vs.LRT) # This is for when in LRT betaPrior=FALSE (deafult). 
+#Length     Class      Mode 
+#  896 character character    (out of 1797 genes of LRT)
+# This is for when in LRT betaPrior=TRUE
+#Length     Class      Mode 
+#  606 character character    (out of 1026 genes of LRT)
+```
+###Run DESeq2
+**Conclusions from tests and forum explanation by Michael Love**
+- Wald statistics is recomended by DESeq2 as it preforms better with logFC shrinkage (betaPrior=TRUE) and "DESeq2 offers tests for specific terms using the Wald test". Also, "when you use the 'contrast' argument (when doing LRT), the p-values are replaced with Wald test p-values". So **Wald** it is.
+- 
+I can set **modelMatrixType="standard"** in `DESeq()` since I defined H1706 and Uninfested as base levels and therfor as in DESeq2 vinnet "the main effect is only for the reference level of the other factors".
+- Shrinkage (betaPrior): ["useful if your analysis focuses only on the interaction term"](https://support.bioconductor.org/p/68635/#68647). However, must take into account that when using "When interaction terms are present, the prior on log fold changes will only be used for the interaction terms" so do not combine such terms in the contrast. In my case we want only the interaction so set defult betaPrior=TRUE, but that can only be done with "expanded" model  so I go with **betaPrior=FALSE**.
+*results(dds, contrast=list("ConditionInfested.GenotypeH9492",c("ConditionUninfested.GenotypeH9775","ConditionInfested.GenotypeH1706")), listValues=c(1,-1/2))*
+```{r}
+dds = DESeq(ddsTable, test="Wald", modelMatrixType="standard", betaPrior=FALSE)
+resultsNames(dds)
+attr(dds,"modelMatrixType")
+```
+###Deferential expression of each combination
+```{r}
+resultsNames(dds)
+resH9492 <- results(dds, contrast = list("ConditionInfested.GenotypeH9492","ConditionInfested.GenotypeH9775"))
+summary(resH9492)
+H9492.sig <- as.data.frame(subset(resH9492, padj < 0.1))
+upH9492 <- subset(H9492.sig, log2FoldChange > 1) #452
+downH9492 <- subset(H9492.sig, log2FoldChange < -1) #986
+####
+resH9553 <- results(dds, contrast = list("ConditionInfested.GenotypeH9553","ConditionInfested.GenotypeH9775"))
+summary(resH9553)
+H9553.sig <- as.data.frame(subset(resH9553, padj < 0.1))
+upH9553 <- subset(H9553.sig, log2FoldChange > 1) #73
+downH9553 <- subset(H9553.sig, log2FoldChange < -1) #21
+```
+##Finde the genes that are up/down regulated in both resistant lines 
+```{r}
+upIntersect <- intersect(upH9492, upH9553)
+downIntersect <- intersect(downH9492, downH9553) 
+###-Nada for both !!-###
+```
+###Add annotations and save files
+```{r}
+anno <- read.csv("/Users/mfarhi/Dropbox/Parasitic_plants/genoms/ITAG2.4_cdna_SGN_TAIR10_annotation.csv")
+anno_up <- merge(upH9492, anno, by.x = "row.names", by.y = "X")
+write.csv(anno_up, "~/Desktop/upH9492.csv")
+anno_down <- merge(downH9492, anno, by.x = "row.names", by.y = "X")
+write.csv(anno_down, "~/Desktop/downH9492.csv")
+```
+```{r}
+attachH9492 <- results(dds, name = "ConditionInfested.GenotypeH9492")
+summary(attachH9492)
+attachH9492 <- as.data.frame(subset(attachH9492, padj < 0.05)) # 91 genes
+up.attH9492 <- subset(attachH9492, log2FoldChange > 1) # 4 genes
+down.attH9492 <- subset(attachH9492, log2FoldChange < -1) # 57 genes
+attachH9553 <- results(dds, name = "ConditionInfested.GenotypeH9553")
+attachH9553 <- as.data.frame(subset(attachH9553, padj < 0.05)) # 19 genes
+up.attH9553 <- subset(attachH9553, log2FoldChange > 1) # 4 genes
+down.attH9553 <- subset(attachH9553, log2FoldChange < -1) # 12 genes
+upH9492infested <- merge(up.attH9492, anno, by.x = "row.names", by.y = "X")
+write.csv(upH9492infested, "upH9492infested.csv", row.names = F)
+upH9553infested <- merge(up.attH9553, anno, by.x = "row.names", by.y = "X")
+write.csv(upH9553infested, "upH9553infested.csv", row.names = F)
+```
+###GO enrichments
+- Addpted from [EMBL](http://www-huber.embl.de/users/klaus/Teaching/DESeq2Predoc2014.html#gene-ontology-enrichment-analysis)
+**Get a proper background**
+```{r}
+library(genefilter)
+library(topGO)
+library(plyr)
+DESeq2Res <- results(dds)
+overallBaseMean <- as.matrix(DESeq2Res[, "baseMean", drop = F])
+backG <- genefinder(overallBaseMean, row.names(upH9492), 10, method = "manhattan")
+backG <- rownames(overallBaseMean)[as.vector(sapply(backG, function(x)x$indices))]
+backG <- setdiff(backG,  row.names(upH9492))
+length(backG)
+```
+**Plot the density of the average expressions to check that the background matching worked**
+```{r, echo=FALSE}
+#install.packages("cancerTiming")
+library(cancerTiming)
+multidensity(list(all= log2(DESeq2Res[,"baseMean"]), foreground=log2(DESeq2Res[row.names(upH9492), "baseMean"]), 
+background =log2(DESeq2Res[backG, "baseMean"])), 
+col = c("red", "blue", "gray"),
+xlab="log2 mean normalized counts", 
+main = "Matching for enrichment analysis", lwd = 5)
+```
+**set the "universe"**
+```{r}
+onts = c( "MF", "BP", "CC" )
+geneIDs = rownames(overallBaseMean)
+inUniverse = geneIDs %in% c(row.names(upH9492), backG)
+inSelection =  geneIDs %in% row.names(upH9492) 
+alg <- factor(as.integer(inSelection[inUniverse]))
+names(alg) <- geneIDs[inUniverse]
+```
+**Get GO annotation**
+```{r}
+map <- readMappings("/Users/mfarhi/Dropbox/Parasitic_plants/genoms/ITAG2.4.go.txt")
+```
+
+**GO enrichment with topGO for cellular component (CC), biological processes (BP), and molecular function (MF)**
+```{r}
+tab = as.list(onts)
+names(tab) = onts
+  for(i in 1:3){
+
+  ## prepare data
+  tgd <- new("topGOdata", ontology=onts[i], allGenes = alg, nodeSize=5,
+                 annotationFun=annFUN.gene2GO, gene2GO=map)
+
+  ## run tests
+    resultTopGO.elim <- runTest(tgd, algorithm = "elim", statistic = "Fisher" )
+    resultTopGO.classic <- runTest(tgd, algorithm = "classic", statistic = "Fisher" )
+
+  ## look at results
+    tab[[i]] <- GenTable( tgd, Fisher.elim = resultTopGO.elim, 
+        Fisher.classic = resultTopGO.classic,
+        orderBy = "Fisher.classic" , topNodes = 25)
+
+    }
+topGOResults <- rbind.fill(tab)
+```
+```{r}
+write.csv(topGOResults, file = "upH9492_topGO.csv")
+```
+###Clustering using SOM
+```{r}
+library(ggplot2)
+library(reshape)
+library(kohonen)
+library(RColorBrewer)
+library(DESeq2)
+set.seed(6)
+#Get data, avarage for genotype/tretment and scale and transpose 
+rld <- rlog(ddsTable)
+head(assay(rld))
+reads <- assay(rld)
+colnames(reads) <- c("H1706_UnIn.1", "H1706_UnIn.2", "H1706_UnIn.3", "H1706_UnIn.4", "H1706_UnIn.5", "H1706_UnIn.6", "H1706_UnIn.7", "H1706_In.1", "H1706_In.2", "H1706_In.3", "H1706_In.4", "H1706_In.5", "H1706_In.6", "H1706_In.7", "H9775_UnIn.1", "H9775_UnIn.2", "H9775_UnIn.3", "H9775_UnIn.4", "H9775_UnIn.5", "H9775_In.1", "H9775_In.2", "H9775_In.3", "H9775_In.4", "H9775_In.5", "H9775_In.6", "H9775_In.7", "H9553_UnI.1", "H9553_UnI.2", "H9553_UnI.3", "H9553_UnI.4", "H9553_UnI.5", "H9553_In.1", "H9553_In.2", "H9553_In.3", "H9553_In.4", "H9553_In.5", "H9492_UnIn.1", "H9492_UnIn.2", "H9492_UnIn.3", "H9492_UnIn.4", "H9492_UnIn.5", "H9492_In.1", "H9492_In.2", "H9492_In.3", "H9492_In.4")
+som.data <- data.frame(row.names = rownames(reads), H1706_UnIn=rowMeans(reads[,1:7]), H1706_In=rowMeans(reads[,8:14]), H9775_UnIn=rowMeans(reads[,15:19]), H9775_In=rowMeans(reads[,19:26]), H9553_UnIn=rowMeans(reads[,27:31]), H9553_In=rowMeans(reads[,32:36]), H9492_UnIn=rowMeans(reads[,37:41]), H9492_In=rowMeans(reads[,42:45]))
+som.data[is.na(som.data)] <- 0
+som.data <- sapply(som.data, as.numeric)
+rownames(som.data) <- rownames(reads)
+som.matrix <- as.matrix((scale(som.data)))
+#Create the SOM Grid
+som.grid <- somgrid(xdim=2, ydim=3, topo="hexagonal")
+#train the SOM
+som <- som(som.matrix, 
+           grid=som.grid, 
+           rlen=100, 
+           alpha=c(0.05,0.01), 
+           keep.data = TRUE, 
+           n.hood = "circular")
+summary(som)
+#or.....
+#som <- som(data=som.matrix, somgrid(20,20,"hexagonal")) 
+```
+**Plots**
+```{r, echo=FALSE}
+plot(som, type ="changes")
+plot(som, type = "codes") 
+```
+
+##Conclusion as of Oct 2nd, 2015
+-  Some genes can be identified as deferentially expressed in the resistant cultivars H9492 and H9553 when attacked by *Cuscuta* and in compression the genes changing in the related susceptible H1706 and H9775.
+- The number of these genes is rather low, especially in H9553.
+- There are no genes with such deferential expression the are in common to both H9492 and H9553.
+- I believe the the cause of this is mainly low sequence coverage. This experiment, of 45 pooled libraries, was sequenced only on 1 lane of Hiseq 2000. So mapped reads are at 2-8x10^6 per sample. For H9553, both control and infected, the total is about half of the total mapped reads I have for H9492, for example.
+- We will need to sequence another lane (100bp so it will also be useful for SNPs) and this is also a chance to better balance the libraries pool and add more reads to H9492 and H9553.
+
+###Appendix
+**Example for Grouping factors**
+```{r}
+#dds$group <- factor(paste0(dds$genotype, dds$condition))
+#design(dds) <- ~group
+#dds <- DESeq(dds)
+#resultsNames(dds)
+#[1] "Intercept"            "groupH1706infested"   "groupH1706uninfested" "groupH9492infested"  
+#[5] "groupH9492uninfested" "groupH9553infested"   "groupH9553uninfested" "groupH9775infested"  
+#[9] "groupH9775uninfested"
+```
